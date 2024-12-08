@@ -2,48 +2,58 @@
 #include <Windows.h>
 #include <string>
 #include <vector>
+#include <iostream>
 #include <WinSock2.h>
+#include <thread>
+#include <ctime>
+#include <iomanip>
 #include <WS2tcpip.h>
 
 using namespace std;
-
+#define MAXCLIENT 10
+#define BUFFERSIZE 2048
 #pragma comment(lib,"Ws2_32.lib")
 class ClientSocket;
 enum class ClientStatus {
 	Connected,
 	Disconnected
 };
-
+struct SClientDesc {
+	thread* ClientListenerThread = nullptr;
+	ClientStatus status;
+	SOCKET clientSocket;
+	SAddr clientAddr;
+	thread clientListenThread;
+};
 struct SData {
 	char* data;
 	size_t size;
 };
-struct SAddr {
+class SAddr {
+public:
 	string ipAddr = "";
 	int port = 0;
 	int AddrType = AF_INET; //no definition for AF_INET6
 };
-typedef void (*OnClientStatusChanged)(ClientSocket, ClientStatus);
-typedef void (*OnReplay)(ClientSocket, SData*);
+typedef void (*OnClientStatusChanged)(SClientDesc&, ClientStatus);
+typedef void (*OnReplay)(SClientDesc&, SData*);
 
 void _INIT_WINSOCK();
 bool _WINSKINT = false;
 class ServerSocket {
 public:
+	bool IsRunning;
 	bool Run();
 	bool Shutdown();
 	explicit ServerSocket(SAddr);
 	struct SAddr GetSAddr();
-	bool SendTo(ClientSocket&,SData*);
-	bool SendToAll(SData*);
+	bool SendTo(SClientDesc&,SData*);
+	void SendToAll(SData*);
 	OnClientStatusChanged OnClientEvent;
 	OnReplay OnReplayEvent;
+	vector<SClientDesc&> Clients;
 private:
-	bool _validate_SAddr();
-	bool _shutdown();
 	SAddr Addr = { 0 };
-	bool IsRunning;
-	vector<ClientSocket> Clients;
 protected:
 	SOCKET _SockObject = INVALID_SOCKET;
 };
