@@ -36,7 +36,8 @@ public:
 	int AddrType = AF_INET; //no definition for AF_INET6
 };
 typedef void (*OnClientStatusChanged)(SClientDesc&, ClientStatus);
-typedef void (*OnReplay)(SClientDesc&, SData*);
+typedef void (*OnServerReplay)(SClientDesc&, SData*);
+typedef void (*OnReplay)(SData*);
 
 void _INIT_WINSOCK();
 bool _WINSKINT = false;
@@ -50,7 +51,7 @@ public:
 	bool SendTo(SClientDesc&,SData*);
 	void SendToAll(SData*);
 	OnClientStatusChanged OnClientEvent;
-	OnReplay OnReplayEvent;
+	OnServerReplay OnReplayEvent;
 	vector<SClientDesc&> Clients;
 private:
 	SAddr Addr = { 0 };
@@ -60,15 +61,10 @@ protected:
 class ClientSocket {
 public:
 	bool Connect(SAddr);
-	bool Disconnect();
+	void Disconnect();
 	bool Send(SData*);
 	OnReplay OnReplayEvent;
-	friend class ServerSocket;
-private:
-	bool isConnected;
-	bool _validate_SAddr(); 
-	bool _shutdown();
-protected:
+	bool IsConnected = false;
 	SOCKET _SockObject = INVALID_SOCKET;
 };
 

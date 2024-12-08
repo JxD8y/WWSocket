@@ -4,17 +4,18 @@ enum class Level {
 	Warning,
 	Info
 };
-void logger(const char* data,Level lv) {
+template<typename... Arg>
+void logger(Level lv,Arg...arg) {
 	tm* now = localtime(nullptr);
 	switch (lv) {
 		case Level::Fault:
-			cout << "[Fault] " << put_time(now, "%H:%M:%S") << ": " << data;
+			cout << "[Fault] " << put_time(now, "%H:%M:%S") << ": " << ... << arg;
 			break;
 		case Level::Warning:
-			cout << "[Warning] " << put_time(now, "%H:%M:%S") << ": " << data;
+			cout << "[Warning] " << put_time(now, "%H:%M:%S") << ": " << ...<< arg;
 			break;
 		case Level::Info:
-			cout << "[INF] " << put_time(now, "%H:%M:%S") << ": " << data;
+			cout << "[INF] " << put_time(now, "%H:%M:%S") << ": " << ...<<arg;
 			break;
 	}
 }
@@ -39,6 +40,8 @@ ServerSocket::ServerSocket(SAddr serverAddr) {
 	if (!ValidateSAddr(serverAddr)) {
 		throw exception("Invalid Address struct");
 	}
+	if (!_WINSKINT)
+		_INIT_WINSOCK();
 	this->Addr = serverAddr;
 	this->_SockObject = socket(serverAddr.AddrType, SOCK_STREAM, 0);
 	if (this->_SockObject == INVALID_SOCKET) {
@@ -51,7 +54,7 @@ void Server_ClientListener(SClientDesc clientDsc,ServerSocket sk) {
 		char *buf = new char[BUFFERSIZE];
 		rc = recv(clientDsc.clientSocket, buf, BUFFERSIZE, 0);
 		if (rc == SOCKET_ERROR) {
-			logger((string("fail in rcv for") + string(clientDsc.clientAddr.ipAddr) + string(" : ") + string(to_string(WSAGetLastError()))).c_str(), Level::Fault);
+			logger(Level::Warning,"fail in rcv for" , clientDsc.clientAddr.ipAddr," : " , WSAGetLastError());
 		}
 		else if (!rc) {
 			if (sk.OnClientEvent) {
@@ -67,8 +70,9 @@ void Server_ClientListener(SClientDesc clientDsc,ServerSocket sk) {
 			if (sk.OnReplayEvent)
 				sk.OnReplayEvent(clientDsc, &data);
 		}
+		delete buf;
 	}
-	while (clientDsc.status == ClientStatus::Connected && !rc && sk.IsRunning);
+	while (clientDsc.status == ClientStatus::Connected && rc != SOCKET_ERROR && sk.IsRunning);
 	
 }
 bool ServerSocket::Run() {
@@ -112,7 +116,7 @@ bool ServerSocket::Run() {
 				int port = 0;
 				char* ipString = new char[15];
 				if (!ConvertSocketAddrIPPORT((sockaddr_in*)&clientAddr, ipString, port)) {
-					logger("fail to convert ip and port for client", Level::Warning);
+					logger(Level::Warning,"fail to convert ip and port for client");
 					clientAddr.ipAddr = "NOADDR";
 					clientAddr.port = 0;
 				}
@@ -131,31 +135,42 @@ bool ServerSocket::Run() {
 }
 bool ServerSocket::Shutdown() {
 	this->IsRunning = false;
+	for (int i{ 0 }; i < this->Clients.size(); i++) {
+		SClientDesc& client = this->Clients[i];
+		if (shutdown(client.clientSocket, SD_BOTH) == SOCKET_ERROR) {
+			logger(Level::Warning,"fail to shut down socket: " ,client.clientAddr.ipAddr);
+		}
+	}
+	if (closesocket(this->_SockObject) == SOCKET_ERROR) {
+		throw exception("fail to close server socket");
+	}
 	return this->IsRunning;
 }
 SAddr ServerSocket::GetSAddr() {
 	return this->Addr;
 }
 bool ServerSocket::SendTo(SClientDesc& clientDsc, SData* data) {
-	if (clientDsc.status == ClientStatus::Disconnected) {
-		logger((string("fail to send to socket: ") + clientDsc.clientAddr.ipAddr).c_str(), Level::Warning);
-		return false;
+	if (this->IsRunning) {
+		if (clientDsc.status == ClientStatus::Disconnected) {
+			logger(Level::Warning, "fail to send to socket: ", clientDsc.clientAddr.ipAddr);
+			return false;
+		}
+		int r = send(clientDsc.clientSocket, data->data, data->size, 0);
+		if (r == SOCKET_ERROR) {
+			logger(Level::Warning, "fail to send to socket: ", clientDsc.clientAddr.ipAddr, " ", WSAGetLastError());
+			return false;
+		}
+		return true;
 	}
-	int r = send(clientDsc.clientSocket, data->data, data->size, 0);
-	if (r == SOCKET_ERROR) {
-		logger((string("fail to send to socket: ") + clientDsc.clientAddr.ipAddr + string(" ") + to_string(WSAGetLastError())).c_str(), Level::Warning);
-		return false;
-	}
-	return true;
 }
 void ServerSocket::SendToAll(SData* data) {
-	if (this->Clients.size() > 0) {
+	if (this->Clients.size() > 0 && this->IsRunning) {
 		for (int i{ 0 }; i < this->Clients.size(); i++) {
 			SClientDesc& client = this->Clients[i];
 			SOCKET sk = client.clientSocket;
 			int r = send(sk, data->data, data->size, 0);
 			if (r == SOCKET_ERROR) {
-				logger((string("fail to mass send to socket: ") + client.clientAddr.ipAddr + string(" ") + to_string(WSAGetLastError())).c_str(), Level::Warning);
+				logger(Level::Warning,"fail to mass send to socket: ", client.clientAddr.ipAddr ," ", WSAGetLastError());
 			}
 
 		}
@@ -163,3 +178,68 @@ void ServerSocket::SendToAll(SData* data) {
 }
 
 //CLIENT FUNCTION DEFINITIONS:
+
+void ClientListener(ClientSocket cs) {
+	int r = 0;
+	do {
+		char* buf = new char[BUFFERSIZE];
+		r = recv(cs._SockObject, buf, BUFFERSIZE, 0);
+		if (r == SOCKET_ERROR) {
+			logger(Level::Warning, "fail in rcv for: ",WSAGetLastError());
+		}
+		else if (!r) {
+			cs.Disconnect();
+		}
+		if (r > 0) {
+			SData data;
+			data.data = buf;
+			data.size = r;
+			if (cs.OnReplayEvent)
+				cs.OnReplayEvent(&data);
+		}
+	} while (cs.IsConnected && r != SOCKET_ERROR);
+}
+bool ClientSocket::Connect(SAddr addr) {
+	if (IsConnected)
+		return true;
+	if (!ValidateSAddr(addr)) {
+		throw exception("invalid SAddr struct");
+	}
+	if (!_WINSKINT)
+		_INIT_WINSOCK();
+	sockaddr_in soAddr = {};
+	soAddr.sin_family = AF_INET;
+	int r = InetPtonA(AF_INET, addr.ipAddr.c_str(), &soAddr.sin_addr);
+	if (!r)
+		throw exception("fail to convert ip address of host");
+	soAddr.sin_port = htons(addr.port);
+	SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_IPV4);
+	r = connect(client, (sockaddr*)&soAddr, sizeof(sockaddr));
+	if (r == SOCKET_ERROR) {
+		throw exception((string("fail to connect to the server socket WSERNO:") + string(to_string(WSAGetLastError()))).c_str());
+	}
+	this->_SockObject = client;
+	IsConnected = true;
+	thread listenT = thread(ClientListener, *this);
+}
+void ClientSocket::Disconnect() {
+	if (this->IsConnected) {
+		this->IsConnected = false;
+		if (shutdown(this->_SockObject, SD_BOTH) == SOCKET_ERROR) {
+			throw exception("fail to shutdown connection with server");
+		}
+		if (closesocket(this->_SockObject) == SOCKET_ERROR) {
+			throw exception("fail to close socket");
+		}
+	}
+}
+bool ClientSocket::Send(SData* data) {
+	if (this->IsConnected) {
+		int r = send(this->_SockObject, data->data, data->size, 0);
+		if (r == SOCKET_ERROR) {
+			logger(Level::Warning, "fail to send data: ", WSAGetLastError());
+			return false;
+		}
+		return true;
+	}
+}
