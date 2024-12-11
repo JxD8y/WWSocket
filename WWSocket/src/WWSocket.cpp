@@ -1,5 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS
-#include "WWSocket.h"
+#include "..\include\WWSocket.h"
 
 enum class Level {
 	Fault,
